@@ -114,6 +114,19 @@
             </button>
           </div>
 
+          <!-- Language Selector -->
+          <div class="shrink-0 flex items-center gap-1.5 px-3 py-2 bg-slate-950/80 rounded-xl border border-slate-800 text-xs text-slate-300">
+            <i data-lucide="globe" class="w-4 h-4 text-indigo-400 shrink-0"></i>
+            <select id="language-select" class="bg-transparent text-slate-200 text-xs focus:outline-none cursor-pointer">
+              <option value="auto" selected>🌐 Auto (Keep Spoken Language)</option>
+              <option value="en">🇺🇸 English (Keep English Script)</option>
+              <option value="hi">🇮🇳 Hindi (हिन्दी)</option>
+              <option value="es">🇪🇸 Spanish (Español)</option>
+              <option value="fr">🇫🇷 French (Français)</option>
+              <option value="de">🇩🇪 German (Deutsch)</option>
+            </select>
+          </div>
+
           <button 
             type="submit" 
             id="btn-submit"
@@ -202,6 +215,11 @@
               <span id="badge-language" class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
                 English
               </span>
+              <!-- Script Switcher Toggle -->
+              <button type="button" id="btn-toggle-script" class="hidden text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/30 transition flex items-center gap-1.5 cursor-pointer">
+                <i data-lucide="languages" class="w-3 h-3"></i>
+                <span id="toggle-script-text">View in Hindi Script</span>
+              </button>
             </div>
 
             <h2 id="video-title" class="text-xl sm:text-2xl font-bold text-white tracking-tight leading-snug"></h2>

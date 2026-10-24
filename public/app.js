@@ -15,6 +15,7 @@ const errorMessage = document.getElementById('error-message');
 const btnDismissError = document.getElementById('btn-dismiss-error');
 const resultSection = document.getElementById('result-section');
 const btnClearAll = document.getElementById('btn-clear-all');
+const languageSelect = document.getElementById('language-select');
 
 // Video Details DOM
 const videoThumbnail = document.getElementById('video-thumbnail');
@@ -22,6 +23,8 @@ const videoTitle = document.getElementById('video-title');
 const authorName = document.getElementById('author-name');
 const durationVal = document.getElementById('duration-val');
 const badgeLanguage = document.getElementById('badge-language');
+const btnToggleScript = document.getElementById('btn-toggle-script');
+const toggleScriptText = document.getElementById('toggle-script-text');
 const statWords = document.getElementById('stat-words');
 const statDuration = document.getElementById('stat-duration');
 const statReadTime = document.getElementById('stat-read-time');
@@ -89,6 +92,29 @@ function setupEventListeners() {
       startTranscription(url);
     }
   });
+
+  // Script Switcher Toggle (Hinglish Devanagari to English Latin)
+  let activeScriptMode = 'english';
+  if (btnToggleScript) {
+    btnToggleScript.addEventListener('click', () => {
+      if (!currentTranscription || !currentTranscription.hasDevanagari) return;
+
+      if (activeScriptMode === 'english') {
+        activeScriptMode = 'devanagari';
+        toggleScriptText.textContent = 'View in English Script';
+        currentTranscription.activeParagraphs = currentTranscription.devanagariParagraphs;
+        currentTranscription.activeFullText = currentTranscription.devanagariFullText;
+      } else {
+        activeScriptMode = 'english';
+        toggleScriptText.textContent = 'View in Hindi Script';
+        currentTranscription.activeParagraphs = currentTranscription.paragraphs;
+        currentTranscription.activeFullText = currentTranscription.fullText;
+      }
+
+      renderFilteredContent();
+      showToast(`Switched to ${activeScriptMode === 'english' ? 'English' : 'Hindi'} script!`);
+    });
+  }
 
   // Paste from clipboard
   btnPaste.addEventListener('click', async () => {
@@ -230,10 +256,11 @@ async function startTranscription(url) {
   }, 2200);
 
   try {
+    const selectedLang = languageSelect ? languageSelect.value : 'auto';
     const res = await fetch('/api/transcribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, lang: selectedLang }),
     });
 
     const data = await res.json();
@@ -281,6 +308,18 @@ function renderTranscriptionResult(data) {
   statDuration.textContent = stats.duration;
   statReadTime.textContent = `${stats.readingTimeMinutes} min`;
   statSegments.textContent = stats.totalSegments.toLocaleString();
+
+  // Handle Script Switcher (Devanagari / English Script)
+  if (data.hasDevanagari && btnToggleScript) {
+    btnToggleScript.classList.remove('hidden');
+    toggleScriptText.textContent = 'View in Hindi Script';
+    data.activeParagraphs = data.paragraphs;
+    data.activeFullText = data.fullText;
+  } else if (btnToggleScript) {
+    btnToggleScript.classList.add('hidden');
+    data.activeParagraphs = data.paragraphs;
+    data.activeFullText = data.fullText;
+  }
 
   // Reset search
   searchInput.value = '';
@@ -345,7 +384,8 @@ function renderTranscriptionResult(data) {
 function renderFilteredContent() {
   if (!currentTranscription) return;
 
-  const { paragraphs, fullText } = currentTranscription;
+  const paragraphs = currentTranscription.activeParagraphs || currentTranscription.paragraphs;
+  const fullText = currentTranscription.activeFullText || currentTranscription.fullText;
   const q = activeSearchQuery;
 
   // 1. Timestamped View

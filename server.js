@@ -4,6 +4,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const Sanscript = require('@indic-transliteration/sanscript');
 const { YoutubeTranscript } = require('youtube-transcript');
 
 // Ensure content directory exists
@@ -66,6 +67,172 @@ function isFileContentIdentical(filePath, normalizedNewText, newHash) {
     console.warn(`Error reading ${filePath} for content comparison:`, err.message);
     return false;
   }
+}
+
+// ============================================================================
+// Hinglish & Devanagari to English Script Converter
+// Solves YouTube India's issue where English audio is forced into Hindi Devanagari
+// ============================================================================
+const DEV_EN_MAP = {
+  'यू': 'you', 'नो': 'know', 'आई': 'I', 'वास': 'was', 'वाज़': 'was', 'वाचिंग': 'watching', 'वाच': 'watch',
+  'दिस': 'this', 'वन': 'one', 'क्लिप': 'clip', 'अह': 'uh', 'व्हेयर': 'where', 'कोच': 'coach', 'इज़': 'is',
+  'इज़': 'is', 'इज': 'is', 'टॉकिंग': 'talking', 'अबाउट': 'about', 'कोबी': 'Kobe', 'ब्रांड': 'Bryant',
+  'ब्रैंड': 'Bryant', 'ब्रांड्स': 'Bryant\'s', 'ब्रैंड्स': 'Bryant\'s', 'सो': 'so', 'डे': 'day', 'डेज़': 'days',
+  'गर्लफ्रेंड': 'girlfriend', 'एट': 'at', 'द': 'the', 'कोर्ट': 'court', 'ओके': 'okay', 'आस्क': 'asked',
+  'व्हाट': 'what', 'डस': 'does', 'इट': 'it', 'लाइक': 'like', 'टू': 'to', 'टु': 'to', 'बी': 'be',
+  'अ': 'a', 'राइट': 'right', 'शी': 'she', 'इट्स': 'it\'s', 'एवरी': 'every', 'आफ्टर': 'after',
+  'बास्केटबॉल': 'basketball', 'मैच': 'match', 'मैचेस': 'matches', 'गो': 'go', 'होम': 'home', 'एंड': 'and',
+  'माइकल': 'Michael', 'जॉर्डन': 'Jordan', 'क्लिप्स': 'clips', 'दैट्स': 'that\'s', 'इमेजिन': 'imagine',
+  'बिकॉज़': 'because', 'बिकॉज': 'because', 'आर': 'are', 'अपसेस्ड': 'obsessed', 'ऑब्सेस्ड': 'obsessed',
+  'डोंट': 'don\'t', 'एनीथिंग': 'anything', 'एल्स': 'else', 'फ्रॉम': 'from', 'मॉर्निंग': 'morning',
+  'नाईट': 'night', 'नाइट': 'night', 'ट्रेनिंग': 'training', 'फॉर': 'for', 'योरसेल्फ': 'yourself',
+  'गोइंग': 'going', 'एंटरटेनमेंट': 'entertainment', 'प्ले': 'play', 'माय': 'my', 'वाइफ': 'wife',
+  'सेस': 'says', 'फुटबॉल': 'football', 'फुटबॉलर': 'footballer', 'फुटबॉलर्स': 'footballers',
+  'होल': 'whole', 'कम': 'come', 'कम्स': 'comes', 'बैक': 'back', 'देन': 'then', 'अगेन': 'again',
+  'रोंग': 'wrong', 'विथ': 'with', 'ऑब्सेशन': 'obsession', 'मोटिवेशन': 'motivation', 'डिसिप्लिन': 'discipline',
+  'कैन': 'can', 'मेक': 'make', 'मेक्स': 'makes', 'देयर': 'there', 'प्लेस': 'place', 'फाइन': 'fine',
+  'वांट': 'want', 'स्टार्ट': 'start', 'डूइंग': 'doing', 'एम': 'am', 'एबल': 'able', 'समथिंग': 'something',
+  'व्हिच': 'which', 'हैव': 'have', 'कांट': 'can\'t', 'विदाउट': 'without', 'अदरवाइज़': 'otherwise',
+  'विल': 'will', 'डाई': 'die', 'वंस': 'ones', 'हू': 'who', 'पार्ट': 'part', 'ऑफ़': 'of', 'ऑफ': 'of',
+  'नॉर्मल': 'normal', 'लाइफ': 'life', 'बट': 'but', 'सी': 'see', 'डिफिकल्ट': 'difficult',
+  'इंडिया': 'India', 'बाय': 'by', 'इनहेरेंट': 'inherent', 'सोसाइटी': 'society', 'सच': 'such',
+  'दैट': 'that', 'वी': 'we', 'डिसेंटिवाइज': 'disincentivize', 'नंबर': 'number', 'इन': 'in',
+  'एनी': 'any', 'फील्ड': 'field', 'वैरी': 'very', 'वेरी': 'very', 'ट्रू': 'true', 'ग्रेट': 'great',
+  'ग्रेटेड': 'great', 'मैथ्स': 'maths', 'शुड': 'should', 'डू': 'do', 'एज': 'as', 'वेल': 'well',
+  'ओह': 'oh', 'नॉट': 'not', 'थिंग': 'thing', 'लेट': 'let', 'लेटे': 'let', 'से': 'say', 'इफ': 'if',
+  'कीप': 'keep', 'ऑल': 'all', 'फैमिली': 'family', 'रिलेशनशिप': 'relationship', 'बास्केट': 'basket',
+  'फेल': 'fail', 'कॉल': 'call', 'कॉल्ड': 'called', 'पर्सन': 'person', 'ब्रोक': 'broke',
+  'वाइजली': 'wisely', 'रिच': 'rich', 'कॉलेज': 'college', 'हाई': 'high', 'स्कूल': 'school',
+  'ड्रॉपआउट': 'dropout', 'सेलिंग': 'selling', 'बुक्स': 'books', 'लेस': 'less', 'सिक्स': 'six',
+  'मंथ्स': 'months', 'हैपेंड': 'happened', 'ग्रिप': 'grip', 'कॉज': '\'cause', 'रेस्ट': 'rest',
+  'जस्ट': 'just', 'नीड': 'need', 'टेल': 'tell', 'डाउन': 'down', 'शेड्यूल': 'schedule', 'लुक': 'look',
+  'फाइव': 'five', 'ईयर्स': 'years', 'ईयर': 'year', 'टेन': 'ten', 'ट्वेंटी': 'twenty', 'मीन': 'mean',
+  'डेवलपमेंट': 'development', 'गिगज़': 'gigs', 'गोरास': 'goras', 'फेल्ड': 'failed', 'कोचेस': 'coaches',
+  'आउटसाइड': 'outside', 'क्लब्स': 'clubs', 'विन': 'win', 'मेडल': 'medal', 'मेडेल्स': 'medals',
+  'ट्रॉफीज़': 'trophies', 'टीचिंग': 'teaching', 'किड्स': 'kids', 'लूज़': 'lose', 'लूज': 'lose',
+  'अकैडमीज़': 'academies', 'अकैडमी': 'academy', 'बिग': 'big', 'टाइम': 'time', 'विनिंग': 'winning',
+  'लूजिंग': 'losing', 'कोचिंग': 'coaching', 'लूजर्स': 'losers', 'लूजर': 'loser', 'टेलिंग': 'telling',
+  'नेवर': 'never', 'हैबिट': 'habit', 'सन': 'son', 'डैड': 'dad', 'मैन': 'man', 'हाउ': 'how',
+  'पार्टिसिपेशन': 'participation', 'शोइंग': 'showing', 'पीपल': 'people', 'अंडरस्टैंड': 'understand',
+  'ओनली': 'only', 'स्टुपिड': 'stupid', 'ब्रिंग': 'bring', 'अप': 'up', 'टेक': 'take', 'ऑन': 'on',
+  'वर्ल्ड': 'world', 'फन': 'fun', 'टिल': 'till', 'एक्चुअली': 'actually', 'बेसिकली': 'basically',
+  'ट्राइंग': 'trying', 'स्पोर्ट्स': 'sports', 'स्पोर्ट': 'sport', 'अवेलेबल': 'available', 'लव': 'love',
+  'मोस्ट': 'most', 'थिंक': 'think', 'बेस्ट': 'best', 'सेवेन': 'seven', 'टीटी': 'TT', 'बैडमिंटन': 'badminton',
+  'वॉलीबॉल': 'volleyball', 'लर्न': 'learn', 'मोर': 'more', 'ओन': 'own', 'डिफरेंट': 'different',
+  'एरिया': 'area', 'ब्रेन': 'brain', 'ओपन्स': 'opens', 'कंफ़र्ट': 'comfort', 'कंफर्ट': 'comfort',
+  'ज़ोन': 'zone', 'जोन': 'zone', 'बिलीव': 'believe', 'ग्रो': 'grow', 'ग्रोथ': 'growth', 'कैंपस': 'camps',
+  'कैम्पस': 'camps', 'फीलिंग': 'feeling', 'कम्फर्टेबल': 'comfortable', 'अनकम्फरफ़ेबल': 'uncomfortable',
+  'फर्स्ट': 'first', 'जॉब': 'job', 'प्रोपर्ली': 'properly', 'बेटर': 'better', 'लक्ज़री': 'luxury',
+  'पुश': 'push', 'पुशिंग': 'pushing', 'लिमिट': 'limit', 'लिमिट्स': 'limits', 'स्टॉप': 'stop',
+  'अब्यूसिंग': 'abusing', 'गिवेन': 'given', 'पिकिंग': 'picking', 'लकिएस्ट': 'luckiest', 'गाए': 'guy',
+  'फार': 'far', 'जस्टिस': 'justice', 'पोटेंशियल': 'potential', 'टैलेंट': 'talent', 'वेस्टेड': 'wasted',
+  'पॉलिटिशियन': 'politician', 'वोट': 'vote', 'डिप्लोमेटिक': 'diplomatic', 'फेस': 'face', 'सक': 'suck',
+  'ओपन': 'open', 'हॉरेबल': 'horrible', 'स्टेट': 'state', 'एक्सेल': 'excel', 'लेटर': 'later',
+  'सिमिलर': 'similar', 'रूल': 'rule', 'नेवी': 'Navy', 'सील': 'SEAL', 'क्विट': 'quit',
+  'मोमेंट': 'moment', 'स्टिल': 'still', 'बियन्ड': 'beyond', 'बाउंडिंग': 'bounding', 'सर': 'sir',
+  'हिल': 'hill', 'थायरा': 'Thera', 'बैंड्स': 'bands', 'एक्टिवली': 'actively', 'पुल': 'pull',
+  'एंकल': 'ankle', 'वेट्स': 'weights', 'वेट': 'weight', 'टॉप': 'top', 'केस': 'kilos',
+  'प्लस': 'plus', 'रनिंग': 'running', 'लॉन्ग': 'long', 'वॉमिट': 'vomit', 'वार्म': 'warm',
+  'वाइप': 'wipe', 'चांस': 'chance', 'फेंट': 'faint', 'पुट': 'put', 'वॉटर': 'water',
+  'किडिंग': 'kidding', 'हार्ड': 'hard', 'ड्रीम': 'dream', 'कंट्री': 'country', 'डैम्ड': 'damned',
+  'गोन्ना': 'gonna', 'लेज़ी': 'lazy', 'एस': 'ass', 'अचीव': 'achieve', 'फ्री': 'free',
+  'स्कॉलरशिप': 'scholarship', 'डिवोटेड': 'devoted', 'अर्निंग': 'earning', 'स्पेंडिंग': 'spending',
+  'लैक्खस': 'lakhs', 'करोड़': 'crore', 'रिजल्ट्स': 'results', 'ओरिएंटेड': 'oriented',
+  'साइंटिफिक': 'scientific', 'वे': 'way', 'लैक्टिक': 'lactic', 'एसिड': 'acid', 'ब्लड': 'blood',
+  'वर्क': 'work', 'एक्सप्लेन': 'explain', 'प्रोफाइल': 'profile', 'एक्जेक्टली': 'exactly',
+  'एक्साक्ट्ली': 'exactly', 'प्रोटंस': 'proteins', 'प्रोटीन': 'protein', 'कार्बोहाइड्रेट्स': 'carbohydrates',
+  'कार्ब्स': 'carbs', 'अकॉर्डिंग': 'according', 'बॉडी': 'body', 'विटामिन': 'vitamin',
+  'लोडिंग': 'loading', 'डन': 'done', 'बिफोर': 'before', 'फ़ूड': 'food', 'नूडल्स': 'noodles',
+  'राइस': 'rice', 'बनानाज़': 'bananas', 'इनफ': 'enough', 'प्राइम्ड': 'primed', 'फुल': 'full',
+  'एनर्जी': 'energy', 'फैट': 'fat', 'परसेंटेज': 'percentage', 'अमाउंट': 'amount', 'पर': 'per',
+  'ग्राम': 'gram', 'लॉस': 'loss', 'गेन': 'gain', 'टेस्ट': 'test', 'मशीन': 'machine',
+  'व्हाइल': 'while', 'हाइड्रेशन': 'hydration', 'ब्रेक्स': 'breaks', 'हाफ': 'half',
+  'डायबिटीज़': 'diabetes', 'एक्सेप्ट': 'except', 'ब्रेक': 'break', 'इम्मीडिएटली': 'immediately',
+  'इमीडीएटली': 'immediately', 'टायर्ड': 'tired', 'मैटर': 'matter', 'आरपीई': 'RPE',
+  'रेट': 'rate', 'पर्सिव्ड': 'perceived', 'एक्सर्शन': 'exertion', 'एथलीट': 'athlete',
+  'फ्लश': 'flush', 'ग्लूकोज': 'glucose', 'मॉनिटरिंग': 'monitoring', 'पैच': 'patch',
+  'लेवल': 'level', 'स्पाइक': 'spike', 'इलेक्ट्रोलाइट': 'electrolyte', 'क्रैश': 'crash',
+  'बेस्ड': 'based', 'मेंटेंड': 'maintained', 'हीलियर्स': 'helios', 'लेजर': 'laser',
+  'मेजर्स': 'measures', 'रिएक्शन': 'reaction', 'डिसिशन': 'decision', 'मेकिंग': 'making',
+  'एडवांटेज': 'advantage', 'आर्म्ड': 'armed', 'फोर्सेज': 'forces', 'स्पेशल': 'special',
+  'मैनुअल': 'manual', 'बॉक्स': 'box', 'ब्रीथिंग': 'breathing', 'पेन': 'pain', 'माइंड': 'mind',
+  'ओवर': 'over', 'डेमो': 'demo', 'किलर': 'killer', 'सिग्नल': 'signal', 'सब्रेस': 'suppressed',
+  'वेयर': 'wear', 'लॉजिकली': 'logically', 'स्पीकिंग': 'speaking', 'केमिकल': 'chemical',
+  'कंट्रोल': 'control', 'इनसाइड': 'inside', 'न्यूरॉन्स': 'neurons', 'फीलिंग': 'feeling',
+  'अग्रीड': 'agreed', 'बुद्धिस्ट': 'Buddhist', 'मंक्स': 'monks', 'फोटो': 'photo',
+  'ऋषि': 'rishi', 'मुनिस': 'munis', 'मीटर्स': 'meters', 'माइनस': 'minus', 'फ्रोजन': 'frozen',
+  'बियर्ड्स': 'beards', 'कोल्ड': 'cold', 'गोल्ड': 'cold', 'ट्रेंड': 'trained', 'शट': 'shut',
+  'मेजर': 'Major', 'एसएफ': 'SF', 'टेक्निक': 'technique', 'यूज': 'use', 'सक्सेसफुल': 'successful',
+  'प्रोड्यूस': 'produced', 'ओवरवर्किंग': 'overworking', 'मसल': 'muscle', 'मसल्स': 'muscles',
+  'माइट': 'might', 'स्प्रेन': 'sprain', 'स्ट्रेन': 'strain', 'रप्चर': 'rupture', 'व्हाटएवर': 'whatever',
+  'जिम्स': 'gyms', 'सपोज': 'suppose', 'बाईसेप': 'bicep', 'रैप्स': 'reps', 'रैप': 'rep',
+  'सेट': 'set', 'सेट्स': 'sets', 'करेक्ट': 'correct', 'स्टेप': 'rep', 'ड्रॉप्स': 'drops',
+  'सेकंड्स': 'seconds', 'ओवरवेट': 'overweight', 'ओवरस्लीप': 'oversleep', 'पावर': 'power',
+  'स्क्वाट्स': 'squats', 'स्क्वाट': 'squat', 'सिंगिंग': 'sitting', 'सिटिंग': 'sitting',
+  'चेयर': 'chair', 'रिड्यूस': 'reduced', 'पॉट': 'pot', 'स्क्रीनिंग': 'screaming',
+  'अटेंशन': 'attention'
+};
+
+const DEV_HI_ROMAN_MAP = {
+  'ये': 'yeh', 'सारा': 'saara', 'इन': 'in', 'तीनों': 'teeno', 'चीज़ों': 'cheezon', 'चीजों': 'cheezon',
+  'से': 'se', 'आता': 'aata', 'है': 'hai', 'हैं': 'hain', 'मैंने': 'maine', 'करना': 'karna',
+  'के': 'ke', 'ठीक': 'theek', 'हट': 'hat', 'जाती': 'jaati', 'थोड़ी': 'thodi', 'थोड़ी': 'thodi',
+  'देर': 'der', 'में': 'mein', 'फिर': 'phir', 'और': 'aur', 'लेकिन': 'lekin', 'बहुत': 'bahut',
+  'हमारी': 'hamaari', 'ऐसी': 'aisi', 'कल': 'kal', 'तेरे': 'tere', 'को': 'ko', 'कहीं': 'kahin',
+  'निकाल': 'nikaal', 'दिया': 'diya', 'कुछ': 'kuch', 'चाहिए': 'chahiye', 'होगा': 'hoga', 'लोड': 'load',
+  'पड़ेगी': 'padegi', 'यही': 'yahi', 'होंगे': 'honge', 'क्या': 'kya', 'मतलब': 'matlab',
+  'मेरे': 'mere', 'नहीं': 'nahin', 'ज़रूरत': 'zaroorat', 'जरूरत': 'zaroorat', 'इनसे': 'inse',
+  'इसीलिए': 'iseeliye', 'रखूं': 'rakhoon', 'कि': 'ki', 'मेरी': 'meri', 'किस': 'kis', 'दिन': 'din',
+  'लग': 'lag', 'गई': 'gayi', 'तो': 'toh', 'पास': 'paas', 'आएंगे': 'aayenge', 'तब': 'tab',
+  'भी': 'bhi', 'ख्याल': 'khayaal', 'रख': 'rakh', 'लूंगा': 'loonga', 'रखो': 'rakho', 'इसके': 'iske',
+  'लिए': 'liye', 'टट्टू': 'tattu', 'हो': 'ho', 'गया': 'gaya', 'कहा': 'kahan', 'जाएगा': 'jaayega',
+  'अच्छा': 'achha', 'अपनी': 'apni', 'वालों': 'waalon', 'बना': 'bana', 'साले': 'saale',
+  'आजकल': 'aajkal', 'देते': 'dete', 'गला': 'gala', 'साफ़': 'saaf', 'करने': 'karne', 'की': 'ki',
+  'आवाज़': 'aawaaz', 'नाक': 'naak', 'भाई': 'bhai', 'उठ': 'uth', 'तू': 'tu', 'यार': 'yaar',
+  'जल्दी': 'jaldi', 'कर': 'kar', 'ले': 'le', 'दर्द': 'dard', 'होती': 'hoti', 'जलन': 'jalan',
+  'मर': 'mar', 'लगाने': 'lagaane', 'इकट्ठे': 'ikatthe', 'अगर': 'agar', 'तुम्हारा': 'tumhaara',
+  'लगेगी': 'lagegi', 'ना': 'na', 'साहब': 'sahab', 'बोलने': 'bolne', 'काफी': 'kaafi',
+  'होता': 'hota', 'कैसे': 'kaise', 'करोगे': 'karoge', 'आप': 'aap', 'कहा': 'kaha',
+  'कहता': 'kehta', 'होएगी': 'hoyegi', 'दोबारा': 'dobaara', 'आएगी': 'aayegi', 'हां': 'haan',
+  'बैठे': 'baithe', 'रहते': 'rehte', 'नंगे': 'nange', 'कहते': 'kehte', 'इसको': 'isko',
+  'सब': 'sab', 'बताते': 'bataate', 'कुछ': 'kuch', 'खराब': 'kharaab', 'दिखाया': 'dikhaaya',
+  'करो': 'karo', 'मैंने': 'maine', 'बोला': 'bola', 'पूछ': 'pooch', 'रही': 'rahi'
+};
+
+function convertDevanagariToEnglishScript(text) {
+  if (!text) return '';
+
+  let cleaned = text.replace(/\[[^\]]*(?:आवाज़|ध्वनि|शोर|हंसी)[^\]]*\]/g, '');
+  cleaned = cleaned.replace(/।/g, '.');
+
+  let converted = cleaned.replace(/[\u0900-\u097F]+/g, (word) => {
+    if (DEV_EN_MAP[word]) return DEV_EN_MAP[word];
+    const stripped = word.replace(/[\u093C]/g, '');
+    if (DEV_EN_MAP[stripped]) return DEV_EN_MAP[stripped];
+
+    if (DEV_HI_ROMAN_MAP[word]) return DEV_HI_ROMAN_MAP[word];
+    if (DEV_HI_ROMAN_MAP[stripped]) return DEV_HI_ROMAN_MAP[stripped];
+
+    try {
+      let rom = Sanscript.t(word, 'devanagari', 'itrans')
+        .replace(/aa/g, 'a')
+        .replace(/ii/g, 'i')
+        .replace(/uu/g, 'u')
+        .replace(/Sh/g, 'sh')
+        .replace(/Ch/g, 'ch')
+        .replace(/[MDH]/g, '')
+        .toLowerCase();
+      return rom;
+    } catch {
+      return word;
+    }
+  });
+
+  converted = converted
+    .replace(/(^|[.?!]\s+)([a-z])/g, (m, p1, p2) => p1 + p2.toUpperCase())
+    .replace(/\bi\b/g, 'I');
+
+  return converted;
 }
 
 /**
@@ -693,7 +860,35 @@ app.post('/api/transcribe', async (req, res) => {
       });
     }
 
-    // Process raw items
+    // Check if the transcript contains Devanagari characters (Hindi / Hinglish phonetics)
+    const rawJoined = transcriptItems.map((i) => i.text).join(' ');
+    const hasDevanagari = /[\u0900-\u097F]/.test(rawJoined);
+
+    // If requested language is English or Auto, convert Devanagari phonetics into English Latin script
+    // to preserve English as spoken in the video!
+    const shouldConvertToEnglish = hasDevanagari && (lang === 'en' || lang === 'auto' || !lang);
+
+    let devanagariParagraphs = null;
+    let devanagariFullText = null;
+
+    if (hasDevanagari) {
+      const devItems = transcriptItems.map((item) => ({
+        ...item,
+        text: item.text.replace(/\n/g, ' ').trim(),
+      }));
+      devanagariParagraphs = groupIntoParagraphs(devItems);
+      devanagariFullText = formatContinuousText(devItems.map((i) => i.text).join(' '));
+
+      if (shouldConvertToEnglish) {
+        transcriptItems = transcriptItems.map((item) => ({
+          ...item,
+          text: convertDevanagariToEnglishScript(item.text).replace(/\n/g, ' ').trim(),
+        }));
+        trackLanguage = 'English (Spoken in Video)';
+      }
+    }
+
+    // Process items
     const formattedSegments = transcriptItems.map((item, idx) => ({
       id: idx + 1,
       startMs: item.offset,
@@ -750,6 +945,9 @@ app.post('/api/transcribe', async (req, res) => {
         duration: formattedDuration,
         language: trackLanguage,
       },
+      hasDevanagari,
+      devanagariParagraphs,
+      devanagariFullText,
       loggedFile,
       availableTracks,
       paragraphs,
