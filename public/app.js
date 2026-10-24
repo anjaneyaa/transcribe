@@ -294,6 +294,41 @@ function renderTranscriptionResult(data) {
   // Render AI Summary / Key Highlights
   renderSummary(data);
 
+  // Render Content Folder Logging Banner
+  const contentLogBanner = document.getElementById('content-log-banner');
+  const contentLogIcon = document.getElementById('content-log-icon');
+  const contentLogTitle = document.getElementById('content-log-title');
+  const contentLogLink = document.getElementById('content-log-link');
+  const contentLogTag = document.getElementById('content-log-tag');
+
+  if (data.loggedFile && data.loggedFile.filename && contentLogBanner) {
+    contentLogBanner.classList.remove('hidden');
+    contentLogLink.textContent = data.loggedFile.relativePath || `content/${data.loggedFile.filename}`;
+    contentLogLink.href = `/api/content/file?name=${encodeURIComponent(data.loggedFile.filename)}`;
+
+    if (data.loggedFile.status === 'identical') {
+      contentLogBanner.className = 'mt-3 p-3 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs border bg-sky-950/40 border-sky-800/80 text-sky-200';
+      contentLogTitle.textContent = 'Existing Log Reused';
+      contentLogTag.textContent = 'Identical Content Verified ✓';
+      contentLogTag.className = 'shrink-0 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30';
+      contentLogIcon.setAttribute('data-lucide', 'folder-check');
+    } else if (data.loggedFile.status === 'created_version') {
+      contentLogBanner.className = 'mt-3 p-3 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs border bg-amber-950/40 border-amber-800/80 text-amber-200';
+      contentLogTitle.textContent = 'Content Differed';
+      contentLogTag.textContent = `New Version (${data.loggedFile.versionNumber || 'Numbered'})`;
+      contentLogTag.className = 'shrink-0 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30';
+      contentLogIcon.setAttribute('data-lucide', 'copy-plus');
+    } else {
+      contentLogBanner.className = 'mt-3 p-3 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs border bg-emerald-950/40 border-emerald-800/80 text-emerald-200';
+      contentLogTitle.textContent = 'Logged to Content Folder';
+      contentLogTag.textContent = 'New Log File Created';
+      contentLogTag.className = 'shrink-0 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+      contentLogIcon.setAttribute('data-lucide', 'file-plus');
+    }
+  } else if (contentLogBanner) {
+    contentLogBanner.classList.add('hidden');
+  }
+
   // Default to timestamped tab
   switchTab('timestamped');
 

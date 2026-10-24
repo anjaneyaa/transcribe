@@ -2,7 +2,197 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 const { YoutubeTranscript } = require('youtube-transcript');
+
+// Ensure content directory exists
+const CONTENT_DIR = path.join(__dirname, 'content');
+if (!fs.existsSync(CONTENT_DIR)) {
+  fs.mkdirSync(CONTENT_DIR, { recursive: true });
+}
+
+/**
+ * Sanitizes a video title into a valid, safe filename across all operating systems.
+ */
+function sanitizeFilename(title) {
+  if (!title) return 'transcript';
+  let safe = title
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '') // remove illegal chars
+    .replace(/[\s\t\n]+/g, ' ')            // collapse whitespaces
+    .trim();
+  // Strip trailing periods or spaces (disallowed on Windows)
+  safe = safe.replace(/[\.\s]+$/, '');
+  if (safe.length > 100) {
+    safe = safe.slice(0, 100).trim();
+  }
+  if (/^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(safe)) {
+    safe = `${safe}_file`;
+  }
+  return safe || 'transcript';
+}
+
+/**
+ * Extracts and compares transcript content from an existing file with new transcript.
+ */
+function isFileContentIdentical(filePath, normalizedNewText, newHash) {
+  try {
+    if (!fs.existsSync(filePath)) return false;
+    const fileContent = fs.readFileSync(filePath, 'utf8');
+
+    // 1. Fast check: match Content-Hash header
+    const hashMatch = fileContent.match(/^Content-Hash:\s*([a-f0-9]{64})/im);
+    if (hashMatch && hashMatch[1] === newHash) {
+      return true;
+    }
+
+    // 2. Secondary check: compare continuous text section
+    const marker = 'FULL CONTINUOUS TEXT';
+    const idx = fileContent.indexOf(marker);
+    if (idx !== -1) {
+      const textAfterMarker = fileContent
+        .slice(idx + marker.length)
+        .replace(/^[=\-\s\n\r]+/, '')
+        .trim()
+        .replace(/\s+/g, ' ');
+      if (textAfterMarker === normalizedNewText) {
+        return true;
+      }
+    }
+
+    // 3. Direct check: verify if file contains the normalized text
+    return fileContent.includes(normalizedNewText);
+  } catch (err) {
+    console.warn(`Error reading ${filePath} for content comparison:`, err.message);
+    return false;
+  }
+}
+
+/**
+ * Logs transcript to the content folder with collision and content identity checking.
+ * 
+ * Rules:
+ * - One file per video named from the video title.
+ * - If file exists:
+ *   - Check if video content is the same as existing file.
+ *   - If same: return existing file info (do not duplicate file).
+ *   - If different: create a new file with numeric suffix (Title (1).txt, Title (2).txt, etc.)
+ */
+function logTranscriptToContent({ videoId, metadata, paragraphs, fullText, trackLanguage, stats }) {
+  try {
+    if (!fs.existsSync(CONTENT_DIR)) {
+      fs.mkdirSync(CONTENT_DIR, { recursive: true });
+    }
+
+    const title = metadata?.title || `YouTube Video ${videoId}`;
+    const baseName = sanitizeFilename(title);
+    const normalizedNewText = fullText.trim().replace(/\s+/g, ' ');
+    const newHash = crypto.createHash('sha256').update(normalizedNewText).digest('hex');
+
+    // Prepare standardized file content
+    const headerLines = [
+      `Title: ${title}`,
+      `Video ID: ${videoId}`,
+      `Video URL: https://www.youtube.com/watch?v=${videoId}`,
+      `Channel: ${metadata?.author || 'Unknown'}`,
+      `Duration: ${stats?.duration || metadata?.duration || 'Unknown'}`,
+      `Language: ${trackLanguage || 'Original'}`,
+      `Total Words: ${stats?.totalWords || 0}`,
+      `Transcribed At: ${new Date().toISOString()}`,
+      `Content-Hash: ${newHash}`,
+      '',
+      '='.repeat(80),
+      'TIMESTAMPED PARAGRAPHS',
+      '='.repeat(80),
+      '',
+    ];
+
+    const timestampLines = (paragraphs || []).map(
+      (p) => `[${p.timestamp || '0:00'}] ${p.text}`
+    );
+
+    const fullTextSection = [
+      '',
+      '='.repeat(80),
+      'FULL CONTINUOUS TEXT',
+      '='.repeat(80),
+      '',
+      fullText,
+      '',
+    ];
+
+    const fileContent = [...headerLines, ...timestampLines, ...fullTextSection].join('\n');
+
+    const baseFileName = `${baseName}.txt`;
+    const baseFilePath = path.join(CONTENT_DIR, baseFileName);
+
+    // Case 1: Base file does NOT exist yet -> Create it
+    if (!fs.existsSync(baseFilePath)) {
+      fs.writeFileSync(baseFilePath, fileContent, 'utf8');
+      console.log(`[Content Log] Created new transcript file: content/${baseFileName}`);
+      return {
+        filename: baseFileName,
+        relativePath: `content/${baseFileName}`,
+        status: 'created',
+        isSameContent: false,
+        message: `Saved transcript to content/${baseFileName}`,
+      };
+    }
+
+    // Case 2: Base file exists -> Check if content is identical
+    if (isFileContentIdentical(baseFilePath, normalizedNewText, newHash)) {
+      console.log(`[Content Log] Identical content found in content/${baseFileName}. Showing existing file.`);
+      return {
+        filename: baseFileName,
+        relativePath: `content/${baseFileName}`,
+        status: 'identical',
+        isSameContent: true,
+        message: `Content is identical to existing file content/${baseFileName}. Reused existing file.`,
+      };
+    }
+
+    // Case 3: Base file exists but content differed -> Look for or create numbered version (1), (2), ...
+    let counter = 1;
+    let candidateFileName = `${baseName} (${counter}).txt`;
+    let candidateFilePath = path.join(CONTENT_DIR, candidateFileName);
+
+    while (fs.existsSync(candidateFilePath)) {
+      if (isFileContentIdentical(candidateFilePath, normalizedNewText, newHash)) {
+        console.log(`[Content Log] Identical content found in content/${candidateFileName}. Showing existing file.`);
+        return {
+          filename: candidateFileName,
+          relativePath: `content/${candidateFileName}`,
+          status: 'identical',
+          isSameContent: true,
+          message: `Content is identical to existing file content/${candidateFileName}. Reused existing file.`,
+        };
+      }
+      counter++;
+      candidateFileName = `${baseName} (${counter}).txt`;
+      candidateFilePath = path.join(CONTENT_DIR, candidateFileName);
+    }
+
+    // Write new numbered version
+    fs.writeFileSync(candidateFilePath, fileContent, 'utf8');
+    console.log(`[Content Log] Content differed. Created new version: content/${candidateFileName}`);
+    return {
+      filename: candidateFileName,
+      relativePath: `content/${candidateFileName}`,
+      status: 'created_version',
+      versionNumber: counter,
+      isSameContent: false,
+      message: `Content differed from original. Saved new version as content/${candidateFileName}`,
+    };
+  } catch (logErr) {
+    console.error('[Content Log] Error logging transcript file:', logErr);
+    return {
+      filename: null,
+      status: 'error',
+      isSameContent: false,
+      message: `Failed to save file: ${logErr.message}`,
+    };
+  }
+}
 
 // ============================================================================
 // Option 2: Proxy Support for Cloud Deployments (Render / AWS / Heroku)
@@ -451,6 +641,19 @@ app.post('/api/transcribe', async (req, res) => {
     const formattedDuration = formatTime(totalDurationMs);
     const estimatedReadingTimeMinutes = Math.max(1, Math.ceil(totalWords / 200));
 
+    // 3. Log transcript to content folder (one file per video, check content identity)
+    const loggedFile = logTranscriptToContent({
+      videoId,
+      metadata,
+      paragraphs,
+      fullText,
+      trackLanguage,
+      stats: {
+        duration: formattedDuration,
+        totalWords,
+      },
+    });
+
     return res.json({
       success: true,
       videoId,
@@ -468,6 +671,7 @@ app.post('/api/transcribe', async (req, res) => {
         duration: formattedDuration,
         language: trackLanguage,
       },
+      loggedFile,
       availableTracks,
       paragraphs,
       segments: formattedSegments,
@@ -479,6 +683,58 @@ app.post('/api/transcribe', async (req, res) => {
       success: false,
       error: error.message || 'An unexpected error occurred while transcribing the video.',
     });
+  }
+});
+
+/**
+ * Lists all logged transcript files from the content folder
+ */
+app.get('/api/content', (req, res) => {
+  try {
+    if (!fs.existsSync(CONTENT_DIR)) {
+      return res.json({ success: true, count: 0, files: [] });
+    }
+    const entries = fs.readdirSync(CONTENT_DIR, { withFileTypes: true });
+    const files = entries
+      .filter((e) => e.isFile() && e.name.endsWith('.txt'))
+      .map((e) => {
+        const fullPath = path.join(CONTENT_DIR, e.name);
+        const stats = fs.statSync(fullPath);
+        return {
+          filename: e.name,
+          relativePath: `content/${e.name}`,
+          sizeBytes: stats.size,
+          modifiedAt: stats.mtime.toISOString(),
+        };
+      })
+      .sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+
+    return res.json({ success: true, count: files.length, files });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Returns the text content of a specific logged transcript file
+ */
+app.get('/api/content/file', (req, res) => {
+  try {
+    const filename = req.query.name;
+    if (!filename) {
+      return res.status(400).json({ success: false, error: 'Filename parameter required' });
+    }
+    // Security: sanitize path traversal
+    const safeName = path.basename(filename);
+    const targetPath = path.join(CONTENT_DIR, safeName);
+    if (!fs.existsSync(targetPath)) {
+      return res.status(404).json({ success: false, error: 'File not found' });
+    }
+    const content = fs.readFileSync(targetPath, 'utf8');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.send(content);
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
