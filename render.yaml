@@ -10,4 +10,8 @@ services:
         value: production
       - key: NODE_VERSION
         value: 18.18.0
+      # Option 2: Add a residential proxy to bypass YouTube's AWS/Render datacenter IP block.
+      # Webshare.io provides 10 free residential proxies.
+      # - key: HTTPS_PROXY
+      #   value: http://username:password@proxy-server:port
 

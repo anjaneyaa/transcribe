@@ -1,7 +1,26 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const { YoutubeTranscript } = require('youtube-transcript');
+
+// ============================================================================
+// Option 2: Proxy Support for Cloud Deployments (Render / AWS / Heroku)
+// Routes all outgoing fetch requests through a residential proxy to bypass
+// YouTube cloud datacenter IP blocks.
+// ============================================================================
+const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.PROXY_URL;
+if (proxyUrl) {
+  try {
+    const { ProxyAgent, setGlobalDispatcher } = require('undici');
+    const proxyAgent = new ProxyAgent(proxyUrl);
+    setGlobalDispatcher(proxyAgent);
+    const sanitized = proxyUrl.replace(/:[^:@]+@/, ':****@');
+    console.log(`[Proxy] Global fetch dispatcher active via: ${sanitized}`);
+  } catch (err) {
+    console.error('[Proxy] Failed to configure proxy agent:', err.message);
+  }
+}
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -142,6 +161,13 @@ async function fetchDirectCaptionTracks(videoId, requestedLang) {
   }
 
   if (!captionTracks || captionTracks.length === 0) {
+    const isCloudEnv = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.AWS_REGION);
+    if (isCloudEnv && !proxyUrl) {
+      throw new Error(
+        'YouTube blocked caption access from Render cloud datacenter IP. ' +
+        'To enable transcription on Render, configure HTTPS_PROXY in Render Environment Variables (e.g., from webshare.io), or run locally via npm run tunnel.'
+      );
+    }
     throw new Error('No caption tracks found for this video. The creator may have disabled subtitles, or the video is private/restricted.');
   }
 

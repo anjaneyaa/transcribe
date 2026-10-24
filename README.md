@@ -109,6 +109,35 @@ Transcribes a YouTube video into full-length structured segments and text.
 
 ---
 
+## 🌐 Deployment & Remote Access (Bypassing YouTube Datacenter Blocks)
+
+YouTube blocks automated requests originating from cloud hosting providers (AWS, Render, GCP, Azure) while allowing requests from residential IPs. You have two rock-solid options:
+
+### 🌟 Option 1: Instant Public URL with Tunnel (Zero Setup, 100% Free)
+Run your local server through a secure public HTTPS tunnel using your home/office residential IP.
+
+1. Start your local server and tunnel in one command:
+   ```bash
+   npm run tunnel
+   ```
+   *Or on Windows, simply double-click [`start-tunnel.bat`](file:///d:/Gen%20AI/transcribe/start-tunnel.bat).*
+2. Copy the generated public URL (e.g. `https://cool-panda-42.loca.lt`) and open it on your phone or share it with anyone!
+3. If prompted with localtunnel's friendly reminder page, click **Click to Continue**.
+
+---
+
+### 🛡️ Option 2: Render Hosting with Residential Proxy
+If hosting on Render (`onrender.com`), route YouTube requests through a free residential proxy:
+
+1. Create a free account at [Webshare.io](https://www.webshare.io/) (gives 10 free proxies) or any proxy provider.
+2. Go to your **Render Dashboard** $\to$ **YouTranscribe Web Service** $\to$ **Environment**.
+3. Add an Environment Variable:
+   - **Key**: `HTTPS_PROXY`
+   - **Value**: `http://username:password@proxy-host:port`
+4. Click **Save Changes**. Render will redeploy automatically and route all YouTube requests through the proxy!
+
+---
+
 ## 📄 License
 MIT License. Free to use and distribute.
 
