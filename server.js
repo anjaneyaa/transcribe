@@ -91,56 +91,105 @@ async function fetchVideoMetadata(videoId) {
 }
 
 /**
- * Strategy 2: Direct YouTube HTML and timedtext caption parser
+ * Robust Multi-Strategy YouTube Caption Extractor
+ * Primary: Official Android InnerTube Gateway (bypasses data-center IP blocks on Render/AWS)
+ * Fallback: Web page HTML scraper
  */
-async function fetchDirectTimedText(videoId, lang = 'en') {
-  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
-  const res = await fetch(watchUrl, {
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  });
+async function fetchDirectCaptionTracks(videoId, requestedLang) {
+  let captionTracks = null;
 
-  const html = await res.text();
-  const playerResponseMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
-  if (!playerResponseMatch) {
-    throw new Error('ytInitialPlayerResponse not found in page');
+  // 1. Primary Strategy: Android InnerTube Gateway
+  try {
+    const resp = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
+      },
+      body: JSON.stringify({
+        context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38' } },
+        videoId: videoId,
+      }),
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      captionTracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    }
+  } catch (errInnerTube) {
+    console.warn(`InnerTube player failed for ${videoId}:`, errInnerTube.message);
   }
 
-  const playerResponse = JSON.parse(playerResponseMatch[1]);
-  const captionTracks =
-    playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  // 2. Secondary Strategy: Web page scraping
+  if (!captionTracks || captionTracks.length === 0) {
+    try {
+      const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+      const res = await fetch(watchUrl, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      });
+      const html = await res.text();
+      const playerResponseMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
+      if (playerResponseMatch) {
+        const playerResponse = JSON.parse(playerResponseMatch[1]);
+        captionTracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      }
+    } catch (errWeb) {
+      console.warn(`Web scrape failed for ${videoId}:`, errWeb.message);
+    }
+  }
 
   if (!captionTracks || captionTracks.length === 0) {
-    throw new Error('No caption tracks found in player response');
+    throw new Error('No caption tracks found for this video. The creator may have disabled subtitles, or the video is private/restricted.');
   }
 
-  // Find track matching language or fallback to first track
-  let selectedTrack = captionTracks.find(
-    (t) => t.languageCode === lang || t.vssId?.includes(`.${lang}`)
-  );
+  // Smart track selection priority:
+  // 1. User requested language (if provided)
+  // 2. English track (en, en-US, en-GB, a.en)
+  // 3. Auto-generated native track (kind: 'asr')
+  // 4. First available caption track
+  let selectedTrack = null;
+  if (requestedLang && requestedLang !== 'auto') {
+    selectedTrack = captionTracks.find(
+      (t) => t.languageCode === requestedLang || t.vssId?.includes(`.${requestedLang}`)
+    );
+  }
   if (!selectedTrack) {
     selectedTrack = captionTracks.find((t) => t.languageCode?.startsWith('en'));
+  }
+  if (!selectedTrack) {
+    selectedTrack = captionTracks.find((t) => t.kind === 'asr');
   }
   if (!selectedTrack) {
     selectedTrack = captionTracks[0];
   }
 
+  // Fetch the timedtext XML using a proper browser user-agent
   const timedTextUrl = selectedTrack.baseUrl;
-  const timedTextRes = await fetch(timedTextUrl);
-  const timedTextXml = await timedTextRes.text();
+  const timedTextRes = await fetch(timedTextUrl, {
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36,gzip(gfe)',
+    },
+  });
 
-  // Parse XML text tags: <text start="1.23" dur="4.56">content</text>
-  const regex = /<text\s+start="([0-9.]+)"\s+dur="([0-9.]+)"[^>]*>([\s\S]*?)<\/text>/g;
+  if (!timedTextRes.ok) {
+    throw new Error(`Timedtext HTTP ${timedTextRes.status}`);
+  }
+
+  const xml = await timedTextRes.text();
   const items = [];
-  let match;
 
-  while ((match = regex.exec(timedTextXml)) !== null) {
-    const offsetSec = parseFloat(match[1]);
-    const durationSec = parseFloat(match[2]);
+  // Parse modern format 3: <p t="ms" d="ms"><s>...</s></p>
+  const pRegex = /<p\s+t="(\d+)"\s+d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
+  let match;
+  while ((match = pRegex.exec(xml)) !== null) {
+    const startMs = parseInt(match[1], 10);
+    const durMs = parseInt(match[2], 10);
     let rawText = match[3]
+      .replace(/<[^>]+>/g, '')
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
@@ -153,23 +202,53 @@ async function fetchDirectTimedText(videoId, lang = 'en') {
     if (rawText) {
       items.push({
         text: rawText,
-        offset: Math.round(offsetSec * 1000),
-        duration: Math.round(durationSec * 1000),
-        lang: selectedTrack.languageCode || 'en',
+        offset: startMs,
+        duration: durMs,
+        lang: selectedTrack.languageCode || 'auto',
       });
     }
   }
 
+  // Fallback to classic format: <text start="s" dur="s">...</text>
   if (items.length === 0) {
-    throw new Error('Parsed 0 timedtext segments');
+    const textRegex = /<text\s+start="([0-9.]+)"\s+dur="([0-9.]+)"[^>]*>([\s\S]*?)<\/text>/g;
+    let tMatch;
+    while ((tMatch = textRegex.exec(xml)) !== null) {
+      const offsetSec = parseFloat(tMatch[1]);
+      const durationSec = parseFloat(tMatch[2]);
+      let rawText = tMatch[3]
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&apos;/g, "'")
+        .replace(/\n/g, ' ')
+        .trim();
+
+      if (rawText) {
+        items.push({
+          text: rawText,
+          offset: Math.round(offsetSec * 1000),
+          duration: Math.round(durationSec * 1000),
+          lang: selectedTrack.languageCode || 'auto',
+        });
+      }
+    }
   }
+
+  if (items.length === 0) {
+    throw new Error('Parsed 0 timedtext segments from caption tracks.');
+  }
+
+  const trackName = selectedTrack.name?.simpleText || selectedTrack.name?.runs?.[0]?.text || selectedTrack.languageCode;
 
   return {
     items,
-    language: selectedTrack.name?.simpleText || selectedTrack.languageCode || 'English',
-    languageCode: selectedTrack.languageCode || 'en',
+    language: trackName || selectedTrack.languageCode || 'Original',
+    languageCode: selectedTrack.languageCode || 'auto',
     availableTracks: captionTracks.map((t) => ({
-      name: t.name?.simpleText || t.languageCode,
+      name: t.name?.simpleText || t.name?.runs?.[0]?.text || t.languageCode,
       code: t.languageCode,
       isAuto: Boolean(t.kind === 'asr'),
     })),
@@ -284,38 +363,29 @@ app.post('/api/transcribe', async (req, res) => {
     let trackLanguage = 'Original';
     let availableTracks = [];
 
-    // Attempt Strategy 1A: If user explicitly requested a specific language, try that language
-    if (lang && lang !== 'auto') {
-      try {
-        transcriptItems = await YoutubeTranscript.fetchTranscript(videoId, { lang });
-        trackLanguage = getLanguageName(lang);
-      } catch (errLang) {
-        console.log(`Requested lang "${lang}" not directly available for ${videoId}, falling back to video's native language...`);
-      }
-    }
+    // Strategy 1: Direct Android InnerTube Gateway (Highest reliability on cloud hosts like Render)
+    try {
+      const directResult = await fetchDirectCaptionTracks(videoId, lang);
+      transcriptItems = directResult.items;
+      trackLanguage = getLanguageName(directResult.languageCode) || directResult.language;
+      availableTracks = directResult.availableTracks;
+    } catch (errDirect) {
+      console.warn(`Strategy 1 (Direct Android Gateway) failed for ${videoId}:`, errDirect.message);
 
-    // Attempt Strategy 1B: Fetch video's native transcript in whatever language it is (Hindi, English, Spanish, etc.)
-    if (!transcriptItems) {
+      // Strategy 2: youtube-transcript package fallback
       try {
-        transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
-        const rawLang = transcriptItems[0]?.lang || 'Original';
-        trackLanguage = getLanguageName(rawLang);
-      } catch (errNative) {
-        console.warn(`Strategy 1 (youtube-transcript native) failed for ${videoId}:`, errNative.message);
-      }
-    }
-
-    // Attempt Strategy 2: Direct timedtext caption extractor
-    if (!transcriptItems) {
-      try {
-        const directResult = await fetchDirectTimedText(videoId, lang);
-        transcriptItems = directResult.items;
-        trackLanguage = directResult.language;
-        availableTracks = directResult.availableTracks;
-      } catch (err2) {
-        console.warn(`Strategy 2 (Direct Timedtext) failed for ${videoId}:`, err2.message);
+        if (lang && lang !== 'auto') {
+          transcriptItems = await YoutubeTranscript.fetchTranscript(videoId, { lang });
+          trackLanguage = getLanguageName(lang);
+        } else {
+          transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
+          const rawLang = transcriptItems[0]?.lang || 'Original';
+          trackLanguage = getLanguageName(rawLang);
+        }
+      } catch (errLib) {
+        console.warn(`Strategy 2 (youtube-transcript) failed for ${videoId}:`, errLib.message);
         throw new Error(
-          'Could not retrieve transcript for this video. The creator may have disabled closed captions, or the video might be private/age-restricted.'
+          errDirect.message || 'Could not retrieve transcript for this video. The creator may have disabled closed captions, or the video might be private/age-restricted.'
         );
       }
     }
