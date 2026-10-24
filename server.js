@@ -10,6 +10,36 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+const LANGUAGE_NAMES = {
+  en: 'English',
+  hi: 'Hindi',
+  es: 'Spanish',
+  fr: 'French',
+  de: 'German',
+  it: 'Italian',
+  pt: 'Portuguese',
+  ru: 'Russian',
+  ja: 'Japanese',
+  ko: 'Korean',
+  zh: 'Chinese',
+  ar: 'Arabic',
+  bn: 'Bengali',
+  mr: 'Marathi',
+  te: 'Telugu',
+  ta: 'Tamil',
+  gu: 'Gujarati',
+  ur: 'Urdu',
+  kn: 'Kannada',
+  ml: 'Malayalam',
+  pa: 'Punjabi',
+};
+
+function getLanguageName(code) {
+  if (!code) return 'Original Language';
+  const clean = code.toLowerCase().split('-')[0];
+  return LANGUAGE_NAMES[clean] || code;
+}
+
 /**
  * Extracts 11-character YouTube video ID from various URL formats
  */
@@ -229,7 +259,7 @@ function groupIntoParagraphs(items, pauseThresholdMs = 2000, targetWordsPerPara 
  */
 app.post('/api/transcribe', async (req, res) => {
   try {
-    const { url, lang = 'en' } = req.body;
+    const { url, lang } = req.body;
 
     if (!url) {
       return res.status(400).json({
@@ -251,17 +281,32 @@ app.post('/api/transcribe', async (req, res) => {
 
     // 2. Fetch transcript with multi-strategy fallback
     let transcriptItems = null;
-    let trackLanguage = 'English';
+    let trackLanguage = 'Original';
     let availableTracks = [];
 
-    // Attempt Strategy 1: youtube-transcript package
-    try {
-      transcriptItems = await YoutubeTranscript.fetchTranscript(videoId, { lang });
-      trackLanguage = lang;
-    } catch (err1) {
-      console.warn(`Strategy 1 (youtube-transcript) failed for ${videoId}:`, err1.message);
+    // Attempt Strategy 1A: If user explicitly requested a specific language, try that language
+    if (lang && lang !== 'auto') {
+      try {
+        transcriptItems = await YoutubeTranscript.fetchTranscript(videoId, { lang });
+        trackLanguage = getLanguageName(lang);
+      } catch (errLang) {
+        console.log(`Requested lang "${lang}" not directly available for ${videoId}, falling back to video's native language...`);
+      }
+    }
 
-      // Attempt Strategy 2: Direct timedtext caption extractor
+    // Attempt Strategy 1B: Fetch video's native transcript in whatever language it is (Hindi, English, Spanish, etc.)
+    if (!transcriptItems) {
+      try {
+        transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
+        const rawLang = transcriptItems[0]?.lang || 'Original';
+        trackLanguage = getLanguageName(rawLang);
+      } catch (errNative) {
+        console.warn(`Strategy 1 (youtube-transcript native) failed for ${videoId}:`, errNative.message);
+      }
+    }
+
+    // Attempt Strategy 2: Direct timedtext caption extractor
+    if (!transcriptItems) {
       try {
         const directResult = await fetchDirectTimedText(videoId, lang);
         transcriptItems = directResult.items;
