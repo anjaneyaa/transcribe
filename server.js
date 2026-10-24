@@ -69,6 +69,83 @@ function isFileContentIdentical(filePath, normalizedNewText, newHash) {
 }
 
 /**
+ * Formats full continuous text:
+ * - Breaks the line after every full stop (. ? ! ।)
+ * - Breaks the line for every speaker transition (SPEAKER:, >>, [Speaker Name]:, etc.)
+ * - Protects abbreviations (Dr., Mr., vs., etc.) and decimals ($3.50, 24.0) from false splits
+ */
+function formatContinuousText(rawText) {
+  if (!rawText) return '';
+
+  let text = rawText
+    .replace(/(?:\r\n|\r|\n)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const SPEAKER_SPLIT_TOKEN = '___SPEAKER_BREAK___';
+
+  // Match >> or >>> speaker transitions
+  text = text.replace(/(?:\s|^)(>{2,3})\s*/g, ` ${SPEAKER_SPLIT_TOKEN}$1 `);
+
+  // Match SPEAKER / SPEAKER 1: / SPEAKER [A-Z]:
+  text = text.replace(/(?:\s|^)(SPEAKER(?:\s*\d+|\s+[A-Z])?\s*:)/gi, ` ${SPEAKER_SPLIT_TOKEN}$1`);
+
+  // Match [Speaker Name]: or [Speaker Name]
+  text = text.replace(/(?:\s|^)(\[[A-Za-z0-9_\s]{2,30}\]:?)/g, ` ${SPEAKER_SPLIT_TOKEN}$1`);
+
+  const ABBREVIATIONS = new Set([
+    'mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'vs', 'etc', 'eg', 'ie',
+    'us', 'uk', 'usa', 'inc', 'ltd', 'co', 'corp', 'st', 'no', 'vol', 'dept',
+    'est', 'approx', 'min', 'sec', 'hr', 'jan', 'feb', 'mar', 'apr', 'jun',
+    'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec'
+  ]);
+
+  const speakerBlocks = text
+    .split(SPEAKER_SPLIT_TOKEN)
+    .map((b) => b.trim())
+    .filter(Boolean);
+
+  const formattedBlocks = speakerBlocks.map((block) => {
+    const broken = block.replace(/([.?!।]+)(["'”’)]*)(\s+|$)/g, (match, punct, quote, space, offset, fullStr) => {
+      // 1. Skip ellipsis (... or ..)
+      if (punct.length > 1 && punct.includes('.')) {
+        return match;
+      }
+
+      // 2. Skip decimals (e.g. 24.0 or $3.50)
+      const prevChars = fullStr.slice(Math.max(0, offset - 15), offset);
+      const nextChars = fullStr.slice(offset + match.length, offset + match.length + 15);
+      if (/\d$/.test(prevChars) && /^\d/.test(nextChars)) {
+        return match;
+      }
+
+      // 3. Skip abbreviations (e.g. Dr. or U.S.)
+      const wordMatch = prevChars.match(/([a-zA-Z]+)$/);
+      if (wordMatch) {
+        const lastWord = wordMatch[1].toLowerCase();
+        if (ABBREVIATIONS.has(lastWord)) {
+          return match;
+        }
+        if (wordMatch[1].length === 1 && !prevChars.endsWith(' I')) {
+          return match;
+        }
+      }
+
+      // Break line after full stop
+      return `${punct}${quote}\n`;
+    });
+
+    return broken
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join('\n');
+  });
+
+  return formattedBlocks.join('\n\n');
+}
+
+/**
  * Logs transcript to the content folder with collision and content identity checking.
  * 
  * Rules:
@@ -111,13 +188,14 @@ function logTranscriptToContent({ videoId, metadata, paragraphs, fullText, track
       (p) => `[${p.timestamp || '0:00'}] ${p.text}`
     );
 
+    const formattedContinuousText = formatContinuousText(fullText);
     const fullTextSection = [
       '',
       '='.repeat(80),
       'FULL CONTINUOUS TEXT',
       '='.repeat(80),
       '',
-      fullText,
+      formattedContinuousText,
       '',
     ];
 
@@ -627,15 +705,16 @@ app.post('/api/transcribe', async (req, res) => {
     // Group into readable conversational paragraphs
     const paragraphs = groupIntoParagraphs(transcriptItems);
 
-    // Continuous clean full text
-    const fullText = transcriptItems
+    // Continuous text with line break after every full stop and speaker change
+    const rawFullText = transcriptItems
       .map((i) => i.text.replace(/\n/g, ' ').trim())
       .join(' ')
       .replace(/\s+/g, ' ');
+    const fullText = formatContinuousText(rawFullText);
 
     // Calculate statistics
-    const totalWords = fullText.split(/\s+/).filter(Boolean).length;
-    const totalCharacters = fullText.length;
+    const totalWords = rawFullText.split(/\s+/).filter(Boolean).length;
+    const totalCharacters = rawFullText.length;
     const lastItem = transcriptItems[transcriptItems.length - 1];
     const totalDurationMs = lastItem ? lastItem.offset + lastItem.duration : 0;
     const formattedDuration = formatTime(totalDurationMs);
